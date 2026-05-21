@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Water-loaded ePBR temperature dynamics data collection.
 
-Collects a 3000-row, 1 Hz dataset using mixed heater, fan, and coast
-excitation. The output is intended for training a predictive dynamics model
-that can later choose fast, safe actions for user setpoints from 20 to 36 C.
+Collects 1 Hz water-loaded datasets using selectable heater, fan, and coast
+excitation profiles. The output is intended for training a predictive dynamics
+model that can later choose fast, safe actions for user setpoints from 20 to
+36 C.
 """
 
 from __future__ import annotations
@@ -90,6 +91,31 @@ class Phase:
     stage_index: int
 
 
+COLLECTION_PROFILES = {
+    "aggressive-mixed": [
+        Phase("baseline_water", 300, 0, 0, 1),
+        *[
+            Phase(name, 60, pwm, fan_state, index)
+            for index, (name, pwm, fan_state) in enumerate(THERMAL_EXCITATION_BLOCKS, start=2)
+        ],
+        Phase("fan_cooling_water", 420, 0, 1, len(THERMAL_EXCITATION_BLOCKS) + 2),
+        Phase("fan_off_settle_water", 180, 0, 0, len(THERMAL_EXCITATION_BLOCKS) + 3),
+    ],
+    "lower-aggression": [
+        Phase("baseline_water", 300, 0, 0, 1),
+        Phase("heat_pwm_10", 180, 10, 0, 2),
+        Phase("coast_fan_off", 120, 0, 0, 3),
+        Phase("heat_pwm_20", 180, 20, 0, 4),
+        Phase("fan_cool_pulse", 180, 0, 1, 5),
+        Phase("heat_pwm_30", 180, 30, 0, 6),
+        Phase("coast_fan_off", 180, 0, 0, 7),
+        Phase("heat_pwm_40", 120, 40, 0, 8),
+        Phase("fan_cooling_water", 300, 0, 1, 9),
+        Phase("fan_off_settle_water", 300, 0, 0, 10),
+    ],
+}
+
+
 @dataclass
 class OutputState:
     requested_pwm: int = -1
@@ -105,8 +131,8 @@ class OutputState:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Collect a 3000-row water-loaded temperature dynamics dataset "
-            "using mixed 0..70% heater, fan, and coast excitation."
+            "Collect a water-loaded temperature dynamics dataset using "
+            "selectable heater, fan, and coast excitation profiles."
         )
     )
     parser.add_argument("--port", default=DEFAULT_PORT, help="Arduino serial port")
@@ -132,6 +158,15 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=DEFAULT_TARGET_TEMP_C,
         help="Upper target for this dynamics run. Heating is guarded at this value.",
+    )
+    parser.add_argument(
+        "--profile",
+        choices=sorted(COLLECTION_PROFILES),
+        default="aggressive-mixed",
+        help=(
+            "Collection profile to run. lower-aggression avoids early high PWM "
+            "blocks and is recommended for the next balanced dataset."
+        ),
     )
     parser.add_argument(
         "--target-guard-release-c",
@@ -199,19 +234,18 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--target-temp-c must be between 20 C and the vessel soft limit")
     if args.target_guard_release_c <= 0:
         raise ValueError("--target-guard-release-c must be positive")
-    pwm_values = {pwm for _, pwm, _ in THERMAL_EXCITATION_BLOCKS}
-    required_pwm_values = {0, 10, 20, 30, 40, 50, 60, 70}
-    if not required_pwm_values.issubset(pwm_values):
-        raise ValueError("THERMAL_EXCITATION_BLOCKS must cover 0,10,20,30,40,50,60,70")
+    phases = build_phase_plan(args.profile)
+    for phase in phases:
+        if phase.requested_pwm < 0 or phase.requested_pwm > MAX_HEATER_PWM:
+            raise ValueError(f"{phase.name} PWM is outside 0..{MAX_HEATER_PWM}")
+        if phase.fan_state not in (0, 1):
+            raise ValueError(f"{phase.name} fan_state must be 0 or 1")
+        if phase.rows <= 0:
+            raise ValueError(f"{phase.name} rows must be positive")
 
 
-def build_phase_plan() -> list[Phase]:
-    phases = [Phase("baseline_water", 300, 0, 0, 1)]
-    for index, (name, pwm, fan_state) in enumerate(THERMAL_EXCITATION_BLOCKS, start=2):
-        phases.append(Phase(name, 60, pwm, fan_state, index))
-    phases.append(Phase("fan_cooling_water", 420, 0, 1, len(phases) + 1))
-    phases.append(Phase("fan_off_settle_water", 180, 0, 0, len(phases) + 1))
-    return phases
+def build_phase_plan(profile: str) -> list[Phase]:
+    return list(COLLECTION_PROFILES[profile])
 
 
 def read_line(ser: serial.Serial) -> str:
@@ -408,7 +442,7 @@ def print_plan(phases: list[Phase], sample_seconds: float) -> None:
 
 
 def run_collection(args: argparse.Namespace) -> Path:
-    phases = build_phase_plan()
+    phases = build_phase_plan(args.profile)
     total_rows = sum(phase.rows for phase in phases)
     run_id = args.run_id or datetime.now().strftime("water_dynamics_20_36_r1_%Y%m%d_%H%M%S")
     output_path, file_obj, writer = open_writer(Path(args.output_dir), run_id)
@@ -579,7 +613,7 @@ def main() -> int:
     args = parse_args()
     try:
         validate_args(args)
-        phases = build_phase_plan()
+        phases = build_phase_plan(args.profile)
         if args.plan_only:
             print_plan(phases, args.sample_seconds)
             return 0

@@ -587,6 +587,22 @@ Future temperature columns must only be used as labels, not input features.
 
 ### 3. Add A Lower-Aggression Collection Profile
 
+Status on 2026-05-21: completed in
+`/home/pi-epbr/projects/Agent/Temperature_control/water_temperature_collection.py`.
+
+The data collector now supports:
+
+```bash
+python3 /home/pi-epbr/projects/Agent/Temperature_control/water_temperature_collection.py --plan-only --profile lower-aggression
+python3 /home/pi-epbr/projects/Agent/Temperature_control/water_temperature_collection.py --profile lower-aggression --target-temp-c 34
+```
+
+The original 3000-row mixed plan remains available as:
+
+```bash
+python3 /home/pi-epbr/projects/Agent/Temperature_control/water_temperature_collection.py --profile aggressive-mixed
+```
+
 The next collection profile should avoid early `55%`, `60%`, `65%`, and `70%`
 heater blocks.
 
@@ -653,6 +669,72 @@ The first controller should be model-predictive:
 5. Choose the action that reaches the setpoint fastest without overshoot.
 
 Hard safety and guard rules must remain outside the ML model.
+
+## Diary Update: 2026-05-21 Code Maintenance
+
+### Smoke Test Safety Cooling
+
+Updated:
+
+```text
+/home/pi-epbr/projects/Agent/Temperature_control/smoke_temperature_test.py
+```
+
+Change:
+
+- If vessel or jacket temperature reaches the smoke-test limit, the script now
+  forces heater PWM to `0%`, turns the fan ON immediately, and labels following
+  rows as `safety_cooling`.
+- Added `safety_reason` to new smoke-test CSVs so vessel and jacket limit events
+  are distinguishable.
+- Once smoke-test safety cooling starts, later scheduled heater phases do not
+  resume heating.
+
+### Selectable Water Collection Profiles
+
+Updated:
+
+```text
+/home/pi-epbr/projects/Agent/Temperature_control/water_temperature_collection.py
+```
+
+Change:
+
+- Added `--profile aggressive-mixed`, preserving the existing 3000-row plan.
+- Added `--profile lower-aggression`, a 2040-row plan intended for the next
+  safer water dataset:
+
+```text
+baseline_water         300 rows, heater 0%,  fan OFF
+heat_pwm_10            180 rows, heater 10%, fan OFF
+coast_fan_off          120 rows, heater 0%,  fan OFF
+heat_pwm_20            180 rows, heater 20%, fan OFF
+fan_cool_pulse         180 rows, heater 0%,  fan ON
+heat_pwm_30            180 rows, heater 30%, fan OFF
+coast_fan_off          180 rows, heater 0%,  fan OFF
+heat_pwm_40            120 rows, heater 40%, fan OFF
+fan_cooling_water      300 rows, heater 0%,  fan ON
+fan_off_settle_water   300 rows, heater 0%,  fan OFF
+```
+
+Validation performed:
+
+```bash
+python3 -m py_compile water_temperature_collection.py smoke_temperature_test.py
+python3 water_temperature_collection.py --plan-only --profile lower-aggression
+python3 water_temperature_collection.py --plan-only --profile aggressive-mixed
+```
+
+### Current Recommended Next Run
+
+Use the lower-aggression profile before collecting more high-PWM data:
+
+```bash
+python3 /home/pi-epbr/projects/Agent/Temperature_control/water_temperature_collection.py \
+  --profile lower-aggression \
+  --target-temp-c 34 \
+  --run-id water_dynamics_lower_aggression_20260521
+```
 
 ## Controller Safety Requirements
 

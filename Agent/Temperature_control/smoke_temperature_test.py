@@ -189,6 +189,7 @@ def open_writer(output_dir: Path, run_id: str):
         "heater_pwm_percent",
         "fan_state",
         "safety_limited",
+        "safety_reason",
         "arduino_heater_reply",
         "arduino_fan_reply",
     ]
@@ -202,6 +203,7 @@ def run_test(args: argparse.Namespace) -> Path:
     output_path, file_obj, writer = open_writer(Path(args.output_dir), run_id)
     start_monotonic = time.monotonic()
     safety_limited = False
+    safety_reason = ""
 
     with file_obj:
         with serial.Serial(args.port, args.baud, timeout=2) as ser:
@@ -214,15 +216,20 @@ def run_test(args: argparse.Namespace) -> Path:
 
             try:
                 for phase in phase_plan(args):
-                    requested_pwm = int(phase["heater_pwm_percent"])
-                    fan_state = int(phase["fan_state"])
+                    if safety_limited:
+                        requested_pwm = 0
+                        fan_state = 1
+                    else:
+                        requested_pwm = int(phase["heater_pwm_percent"])
+                        fan_state = int(phase["fan_state"])
                     heater_reply = set_heater_pwm(ser, requested_pwm)
                     fan_reply = set_fan(ser, bool(fan_state))
                     phase_start = time.monotonic()
                     next_sample = phase_start
 
                     print(
-                        f"Phase {phase['stage_index']}: {phase['phase']} "
+                        f"Phase {phase['stage_index']}: "
+                        f"{'safety_cooling' if safety_limited else phase['phase']} "
                         f"for {phase['duration_s']}s, heater={requested_pwm}%, fan={fan_state}"
                     )
 
@@ -243,26 +250,34 @@ def run_test(args: argparse.Namespace) -> Path:
                             )
                         ):
                             safety_limited = True
+                            if vessel_temp_c >= args.max_temp_c:
+                                safety_reason = "vessel_temperature_limit"
+                            else:
+                                safety_reason = "jacket_temperature_limit"
                             requested_pwm = 0
                             heater_reply = set_heater_pwm(ser, 0)
+                            fan_state = 1
+                            fan_reply = set_fan(ser, True)
                             print(
-                                "Safety limit reached. Heater forced to 0%. "
+                                "Safety limit reached. Heater forced to 0%, fan forced ON. "
                                 f"vessel={vessel_temp_c:.2f} C, jacket={jacket_temp_c:.2f} C"
                             )
 
                         elapsed_s = time.monotonic() - start_monotonic
+                        row_phase = "safety_cooling" if safety_limited else phase["phase"]
                         writer.writerow(
                             {
                                 "timestamp_iso": datetime.now().isoformat(timespec="seconds"),
                                 "elapsed_s": f"{elapsed_s:.2f}",
                                 "run_id": run_id,
-                                "phase": phase["phase"],
+                                "phase": row_phase,
                                 "stage_index": phase["stage_index"],
                                 "vessel_temp_c": f"{vessel_temp_c:.2f}",
                                 "jacket_temp_c": f"{jacket_temp_c:.2f}",
                                 "heater_pwm_percent": requested_pwm,
                                 "fan_state": fan_state,
                                 "safety_limited": int(safety_limited),
+                                "safety_reason": safety_reason,
                                 "arduino_heater_reply": heater_reply,
                                 "arduino_fan_reply": fan_reply,
                             }
@@ -270,7 +285,7 @@ def run_test(args: argparse.Namespace) -> Path:
                         file_obj.flush()
 
                         print(
-                            f"{elapsed_s:7.1f}s {phase['phase']:>12} "
+                            f"{elapsed_s:7.1f}s {row_phase:>14} "
                             f"T={vessel_temp_c:5.2f} C J={jacket_temp_c:5.2f} C "
                             f"PWM={requested_pwm:02d}% fan={fan_state}"
                         )

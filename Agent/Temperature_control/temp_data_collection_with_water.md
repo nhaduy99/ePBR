@@ -332,3 +332,16 @@ if jacket_temp_c >= 45.0: heater = 0, fan = ON
 if vessel_temp_c >= 38.0: heater = 0, fan = ON, abort
 if sensor invalid: heater = 0, fan = ON
 ```
+
+## Collection Profiles
+
+The water collection script now has selectable plans:
+
+```bash
+python3 /home/pi-epbr/projects/Agent/Temperature_control/water_temperature_collection.py --plan-only --profile aggressive-mixed
+python3 /home/pi-epbr/projects/Agent/Temperature_control/water_temperature_collection.py --plan-only --profile lower-aggression
+```
+
+Use `lower-aggression` for the next balanced water run. It avoids early
+`55%`, `60%`, `65%`, and `70%` heater blocks while still collecting low/medium
+PWM, fan cooling, coast, and settle data.
