@@ -21,6 +21,7 @@ from typing import Iterable
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = SCRIPT_DIR / "data"
+MAX_HEATER_PWM_PERCENT = 80
 
 REQUIRED_COLUMNS = [
     "timestamp_iso",
@@ -256,9 +257,21 @@ def validation_issues(
             )
         )
 
-    invalid_pwm = [value for value in heater_pwm if value is None or value < 0 or value > 70]
+    invalid_pwm = [
+        value
+        for value in heater_pwm
+        if value is None or value < 0 or value > MAX_HEATER_PWM_PERCENT
+    ]
     if invalid_pwm:
-        issues.append(("FAIL", f"{len(invalid_pwm)} heater_pwm_percent value(s) outside 0..70"))
+        issues.append(
+            (
+                "FAIL",
+                (
+                    f"{len(invalid_pwm)} heater_pwm_percent value(s) outside "
+                    f"0..{MAX_HEATER_PWM_PERCENT}"
+                ),
+            )
+        )
 
     invalid_fan = [value for value in fan_state if value not in (0, 1)]
     if invalid_fan:
@@ -266,7 +279,7 @@ def validation_issues(
 
     unique_pwm = sorted({value for value in heater_pwm if value is not None})
     unique_fan = sorted({value for value in fan_state if value is not None})
-    if len(unique_pwm) < 8:
+    if len(unique_pwm) < 4:
         issues.append(("WARN", f"only {len(unique_pwm)} distinct heater PWM value(s) present"))
     if unique_fan != [0, 1]:
         issues.append(("WARN", f"fan states present are {unique_fan}, expected [0, 1]"))

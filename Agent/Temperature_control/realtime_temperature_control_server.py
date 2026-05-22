@@ -141,7 +141,7 @@ class SimulatedTemperatureIO(TemperatureIO):
         now = time.monotonic()
         dt = max(0.1, min(2.0, now - self.last_time))
         self.last_time = now
-        heater_drive = self.heater_pwm / 70.0
+        heater_drive = self.heater_pwm / MAX_HEATER_PWM
         jacket_gain = 0.11 * heater_drive
         fan_cooling = 0.045 if self.fan_state else 0.0
         self.jacket += (
@@ -553,10 +553,6 @@ class ControlLoop:
             return "vessel_emergency_limit"
         if vessel_temp_c >= limits["vessel_soft_limit_c"]:
             return "vessel_soft_limit"
-        model_handoff_error_c = target_temp_c * 0.02
-        vessel_inside_model_band = target_temp_c - vessel_temp_c <= model_handoff_error_c
-        if vessel_inside_model_band and jacket_temp_c >= limits["jacket_soft_limit_c"]:
-            return "jacket_soft_limit"
         return ""
 
     def _valid_temperature(self, value: float) -> bool:

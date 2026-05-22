@@ -33,7 +33,7 @@ DEFAULT_JACKET_GUARD_RELEASE_C = 3.0
 DEFAULT_MAX_JACKET_VESSEL_GAP_C = 8.0
 MIN_VALID_TEMP_C = 0.0
 MAX_VALID_TEMP_C = 60.0
-MAX_HEATER_PWM = 70
+MAX_HEATER_PWM = 80
 
 THERMAL_EXCITATION_BLOCKS = [
     ("heat_pwm_30", 30, 0),
@@ -71,6 +71,52 @@ THERMAL_EXCITATION_BLOCKS = [
     ("heat_pwm_45", 45, 0),
     ("heat_pwm_60", 60, 0),
     ("fan_cool_pulse", 0, 1),
+]
+
+VESSEL_ONLY_PWM_30_80_BLOCKS = [
+    ("heat_pwm_30", 30, 0),
+    ("heat_pwm_40", 40, 0),
+    ("heat_pwm_50", 50, 0),
+    ("coast_fan_off", 0, 0),
+    ("heat_pwm_60", 60, 0),
+    ("fan_cool_pulse", 0, 1),
+    ("heat_pwm_40", 40, 0),
+    ("heat_pwm_70", 70, 0),
+    ("coast_fan_off", 0, 0),
+    ("heat_pwm_50", 50, 0),
+    ("heat_pwm_80", 80, 0),
+    ("fan_cool_pulse", 0, 1),
+    ("heat_pwm_30", 30, 0),
+    ("heat_pwm_60", 60, 0),
+    ("coast_fan_off", 0, 0),
+    ("heat_pwm_70", 70, 0),
+    ("heat_pwm_40", 40, 0),
+    ("fan_cool_pulse", 0, 1),
+    ("heat_pwm_50", 50, 0),
+    ("heat_pwm_80", 80, 0),
+    ("coast_fan_off", 0, 0),
+    ("heat_pwm_30", 30, 0),
+    ("heat_pwm_60", 60, 0),
+    ("fan_cool_pulse", 0, 1),
+    ("heat_pwm_70", 70, 0),
+    ("heat_pwm_50", 50, 0),
+    ("coast_fan_off", 0, 0),
+    ("heat_pwm_80", 80, 0),
+    ("heat_pwm_40", 40, 0),
+    ("fan_cool_pulse", 0, 1),
+]
+
+VESSEL_ONLY_NEAR_TARGET_BLOCKS = [
+    ("near_target_heat_pwm_30", 30, 0),
+    ("near_target_coast_fan_off", 0, 0),
+    ("near_target_heat_pwm_40", 40, 0),
+    ("near_target_coast_fan_off", 0, 0),
+    ("near_target_heat_pwm_50", 50, 0),
+    ("near_target_fan_cool_pulse", 0, 1),
+    ("near_target_heat_pwm_30", 30, 0),
+    ("near_target_heat_pwm_40", 40, 0),
+    ("near_target_coast_fan_off", 0, 0),
+    ("near_target_fan_cool_pulse", 0, 1),
 ]
 
 
@@ -112,6 +158,36 @@ COLLECTION_PROFILES = {
         Phase("heat_pwm_40", 120, 40, 0, 8),
         Phase("fan_cooling_water", 300, 0, 1, 9),
         Phase("fan_off_settle_water", 300, 0, 0, 10),
+    ],
+    "vessel-only-pwm-30-80": [
+        Phase("baseline_water", 300, 0, 0, 1),
+        *[
+            Phase(name, 60, pwm, fan_state, index)
+            for index, (name, pwm, fan_state) in enumerate(
+                VESSEL_ONLY_PWM_30_80_BLOCKS, start=2
+            )
+        ],
+        *[
+            Phase(name, 60, pwm, fan_state, index)
+            for index, (name, pwm, fan_state) in enumerate(
+                VESSEL_ONLY_NEAR_TARGET_BLOCKS,
+                start=len(VESSEL_ONLY_PWM_30_80_BLOCKS) + 2,
+            )
+        ],
+        Phase(
+            "final_fan_cooling_water",
+            180,
+            0,
+            1,
+            len(VESSEL_ONLY_PWM_30_80_BLOCKS) + len(VESSEL_ONLY_NEAR_TARGET_BLOCKS) + 2,
+        ),
+        Phase(
+            "final_fan_off_settle_water",
+            120,
+            0,
+            0,
+            len(VESSEL_ONLY_PWM_30_80_BLOCKS) + len(VESSEL_ONLY_NEAR_TARGET_BLOCKS) + 3,
+        ),
     ],
 }
 
@@ -165,7 +241,8 @@ def parse_args() -> argparse.Namespace:
         default="aggressive-mixed",
         help=(
             "Collection profile to run. lower-aggression avoids early high PWM "
-            "blocks and is recommended for the next balanced dataset."
+            "blocks. vessel-only-pwm-30-80 ignores jacket temperature for guard "
+            "logic and collects a 3000-row 30..80% PWM dataset."
         ),
     )
     parser.add_argument(
@@ -246,6 +323,10 @@ def validate_args(args: argparse.Namespace) -> None:
 
 def build_phase_plan(profile: str) -> list[Phase]:
     return list(COLLECTION_PROFILES[profile])
+
+
+def uses_jacket_feedback(profile: str) -> bool:
+    return profile != "vessel-only-pwm-30-80"
 
 
 def read_line(ser: serial.Serial) -> str:
@@ -506,7 +587,8 @@ def run_collection(args: argparse.Namespace) -> Path:
                     vessel_temp_c = read_temperature(ser, "t")
                     jacket_temp_c = read_temperature(ser, "j")
                     validate_temperature("vessel", vessel_temp_c)
-                    validate_temperature("jacket", jacket_temp_c)
+                    if uses_jacket_feedback(args.profile):
+                        validate_temperature("jacket", jacket_temp_c)
 
                     if ambient_temp_c is None:
                         ambient_temp_c = vessel_temp_c
@@ -541,7 +623,7 @@ def run_collection(args: argparse.Namespace) -> Path:
                             f"jacket={jacket_temp_c:.2f} C"
                         )
 
-                    if not safety_limited:
+                    if not safety_limited and uses_jacket_feedback(args.profile):
                         if jacket_temp_c >= args.jacket_soft_limit_c:
                             jacket_guard_active = True
                             set_outputs(
@@ -561,6 +643,7 @@ def run_collection(args: argparse.Namespace) -> Path:
                         ):
                             jacket_guard_active = False
 
+                    if not safety_limited:
                         if not jacket_guard_active and vessel_temp_c >= args.target_temp_c:
                             target_guard_active = True
                             set_outputs(

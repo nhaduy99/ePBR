@@ -741,7 +741,7 @@ python3 /home/pi-epbr/projects/Agent/Temperature_control/water_temperature_colle
 The final controller must always enforce hard-coded safety rules outside the ML model:
 
 ```text
-heater PWM <= 70%
+heater PWM <= configured model limit
 heater OFF if vessel temperature >= 36.5 C
 heater OFF if jacket temperature >= safety limit
 fan ON if jacket temperature is too high
@@ -750,3 +750,247 @@ manual stop always available
 ```
 
 The ML model should recommend actions, but it must not be the only safety layer.
+
+## Diary Update: 2026-05-22 Vessel-Only PWM 30-80 Model
+
+### Vessel-Only Collection Plan
+
+Created:
+
+```text
+/home/pi-epbr/projects/Agent/Temperature_control/vessel_only_pwm_30_80_data_plan.md
+```
+
+Goal:
+
+- Collect a 3000-row, 1 Hz dataset.
+- Use heater PWM values from `30%` to `80%`.
+- Use only `vessel_temp_c` for feedback, target guard, and safety decisions.
+- Keep jacket temperature as passive telemetry only.
+
+### Collection Script Updates
+
+Updated:
+
+```text
+/home/pi-epbr/projects/Agent/Temperature_control/water_temperature_collection.py
+```
+
+Changes:
+
+- Added `--profile vessel-only-pwm-30-80`.
+- Increased collection-script PWM ceiling to `80%`.
+- Disabled jacket temperature validation/guard control for the vessel-only
+  profile.
+- Preserved jacket columns in the CSV as telemetry.
+
+Validation:
+
+```bash
+python3 -m py_compile water_temperature_collection.py
+python3 water_temperature_collection.py --profile vessel-only-pwm-30-80 --target-guard-release-c 1.5 --plan-only
+```
+
+Plan preview confirmed:
+
+```text
+Planned rows: 3000
+Planned duration: 3000 seconds
+PWM values included: 30, 40, 50, 60, 70, 80
+```
+
+### Vessel-Only Data Run
+
+Command used:
+
+```bash
+python3 /home/pi-epbr/projects/Agent/Temperature_control/water_temperature_collection.py \
+  --profile vessel-only-pwm-30-80 \
+  --target-temp-c 36 \
+  --target-guard-release-c 1.5 \
+  --run-id vessel_only_pwm_30_80_20260522
+```
+
+CSV output:
+
+```text
+/home/pi-epbr/projects/Agent/Temperature_control/data/vessel_only_pwm_30_80_20260522.csv
+```
+
+Result:
+
+```text
+Rows collected: 2019
+Requested rows: 3000
+Elapsed: 2.21 s to 2020.21 s
+Vessel range: 20.30 C to 38.00 C
+Jacket telemetry range: 20.10 C to 59.70 C
+Abort reason: emergency_vessel_limit
+```
+
+Coverage before abort:
+
+```text
+PWM values: 0, 30, 40, 50, 60, 70, 80
+Fan states: 0, 1
+Phases: baseline, heating, coast, fan cooling, target guard, safety cooling
+```
+
+Safety sequence:
+
+```text
+target_guard_cooling started at vessel 36.0 C
+safety_cooling started at vessel 36.5 C
+run aborted at vessel 38.0 C
+```
+
+Observation:
+
+- The run produced useful ML data and covered all requested PWM levels.
+- It did not complete 3000 rows because stored heat kept raising vessel
+  temperature after heater shutdown.
+- For the next vessel-only 3000-row attempt, start the vessel guard earlier:
+
+```text
+target guard enter: 34.5 C
+target guard release: 33.0 C
+```
+
+### Analysis Script Update
+
+Updated:
+
+```text
+/home/pi-epbr/projects/Agent/Temperature_control/analyze_temperature_dataset.py
+```
+
+Changes:
+
+- Treat `80%` heater PWM as valid.
+- Relax distinct-PWM warning so vessel-only or narrower profile datasets are
+  not incorrectly flagged.
+
+Generated feature file:
+
+```text
+/home/pi-epbr/projects/Agent/Temperature_control/data/vessel_only_pwm_30_80_20260522_features.csv
+```
+
+Analyzer summary:
+
+```text
+Rows: 2019
+Sample interval: 1.0000 s mean
+Safety rows: 106
+Safety reasons: vessel_soft_limit=105, emergency_vessel_limit=1
+Status after validator update: PASS
+```
+
+### New Model Training
+
+Updated:
+
+```text
+/home/pi-epbr/projects/Agent/Temperature_control/train_temperature_model.py
+```
+
+Changes:
+
+- Heater feature scaling now uses the `80%` model limit instead of the old
+  `70%` denominator.
+- Model artifact records `max_heater_pwm_percent: 80`.
+
+Training command:
+
+```bash
+python3 /home/pi-epbr/projects/Agent/Temperature_control/train_temperature_model.py \
+  /home/pi-epbr/projects/Agent/Temperature_control/data/vessel_only_pwm_30_80_20260522.csv
+```
+
+Model output:
+
+```text
+/home/pi-epbr/projects/Agent/Temperature_control/models/temperature_dynamics_model_latest.json
+```
+
+Training details:
+
+```text
+Training rows: 1447
+Holdout rows: 482
+Model created_at: 2026-05-22T14:58:43
+Training source: data/vessel_only_pwm_30_80_20260522.csv
+```
+
+Chronological holdout vessel metrics:
+
+```text
+15 s MAE: 0.0884 C, RMSE: 0.1087 C
+30 s MAE: 0.1412 C, RMSE: 0.1674 C
+60 s MAE: 0.2630 C, RMSE: 0.2983 C
+```
+
+### Controller And UI Updates
+
+Updated:
+
+```text
+/home/pi-epbr/projects/Agent/Temperature_control/temperature_model_controller.py
+/home/pi-epbr/projects/Agent/Temperature_control/realtime_temperature_control_server.py
+```
+
+Changes:
+
+- Controller candidate actions now include `80%`.
+- Fast-approach heating may choose `80%`.
+- Runtime controller ignores jacket-based hard rejection, jacket-vessel gap
+  rejection, and jacket-based scoring for this vessel-only test path.
+- UI server safety still enforces vessel soft limit, vessel emergency limit,
+  and invalid sensor readings.
+- Jacket readings remain visible and logged.
+
+Controller smoke checks:
+
+```bash
+python3 temperature_model_controller.py --vessel 22 --jacket 55 --setpoint 34 --ambient 20.3
+python3 temperature_model_controller.py --vessel 35.5 --jacket 59 --setpoint 36 --ambient 20.3
+```
+
+Both checks loaded the new model and returned valid actions, including `80%`
+where selected by the controller.
+
+### UI Server Started For Testing
+
+Started in simulation mode:
+
+```bash
+python3 realtime_temperature_control_server.py --simulate --port 8080
+```
+
+Available URLs:
+
+```text
+http://127.0.0.1:8080
+http://138.25.85.198:8080
+```
+
+Status check:
+
+```bash
+curl -s http://127.0.0.1:8080/api/status
+```
+
+Result:
+
+```text
+connected: true
+mode: simulate
+phase: idle_monitor
+model: latest trained model path
+```
+
+Important note:
+
+- The UI is currently suitable for simulation testing.
+- Real hardware testing should be supervised because the vessel-only collection
+  run reached `38.0 C` emergency abort even after heater shutdown.

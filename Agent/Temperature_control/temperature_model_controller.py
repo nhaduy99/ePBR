@@ -17,7 +17,7 @@ from train_temperature_model import RAW_FEATURE_COLUMNS, feature_vector
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL_PATH = SCRIPT_DIR / "models" / "temperature_dynamics_model_latest.json"
-DEFAULT_ACTIONS = [(pwm, 0) for pwm in (0, 10, 20, 30, 40, 50, 60, 70)] + [(0, 1)]
+DEFAULT_ACTIONS = [(pwm, 0) for pwm in (0, 10, 20, 30, 40, 50, 60, 70, 80)] + [(0, 1)]
 MODEL_HANDOFF_FRACTION = 0.02
 
 
@@ -169,11 +169,11 @@ class TemperatureMPCController:
             return self._predicted_action(state, setpoint, 0, 1, "vessel safety cooling")
 
         if error_c >= 10.0:
-            heater_pwm = 70
+            heater_pwm = 80
         elif error_c >= 6.0:
-            heater_pwm = 60
+            heater_pwm = 70
         else:
-            heater_pwm = 50
+            heater_pwm = 60
         return self._predicted_action(state, setpoint, heater_pwm, 0, "fast approach heating")
 
     def _predicted_action(
@@ -200,13 +200,9 @@ class TemperatureMPCController:
         limits = self.model.limits
         if state.vessel_temp_c >= limits["vessel_soft_limit_c"]:
             return True
-        if state.jacket_temp_c >= limits["jacket_soft_limit_c"] - 1.0:
-            return True
         if state.vessel_temp_c >= setpoint + 1.0:
             return True
         if state.previous_fan_state and state.vessel_temp_c >= setpoint + 0.5:
-            return True
-        if state.jacket_temp_c >= min(setpoint + 6.0, limits["jacket_soft_limit_c"] - 2.0):
             return True
         return False
 
@@ -222,17 +218,10 @@ class TemperatureMPCController:
         applies when there is clear thermal headroom.
         """
         error_c = setpoint - state.vessel_temp_c
-        gap_c = state.jacket_temp_c - state.vessel_temp_c
-        limits = self.model.limits
-        jacket_ceiling_c = min(setpoint + 4.0, limits["jacket_soft_limit_c"] - 3.0)
         if error_c <= self._model_handoff_error_c(setpoint):
             return []
-        if state.jacket_temp_c >= jacket_ceiling_c:
-            return []
-        if gap_c >= 6.0:
-            return []
 
-        if error_c >= 8.0 and gap_c <= 3.0:
+        if error_c >= 8.0:
             min_pwm = 50
         elif error_c >= 5.0:
             min_pwm = 40
@@ -293,12 +282,8 @@ class TemperatureMPCController:
         limits = self.model.limits
         if state.vessel_temp_c >= limits["vessel_soft_limit_c"]:
             return "vessel soft limit requires heater off and fan on"
-        if state.jacket_temp_c >= limits["jacket_soft_limit_c"]:
-            return "jacket soft limit requires heater off and fan on"
         if heater_pwm > limits["max_heater_pwm_percent"]:
             return "heater PWM above model limit"
-        if state.jacket_temp_c - state.vessel_temp_c > limits["max_jacket_vessel_gap_c"] and heater_pwm > 0:
-            return "jacket-vessel gap too high for heating"
         if fan_state not in (0, 1):
             return "invalid fan state"
         return ""
@@ -314,28 +299,17 @@ class TemperatureMPCController:
         vessel_15 = prediction["vessel_temp_t_plus_15s"]
         vessel_30 = prediction["vessel_temp_t_plus_30s"]
         vessel_60 = prediction["vessel_temp_t_plus_60s"]
-        jacket_60 = prediction["jacket_temp_t_plus_60s"]
-        gap_60 = jacket_60 - vessel_60
-
         current_error = setpoint - state.vessel_temp_c
         future_error = abs(setpoint - vessel_60)
         short_error = abs(setpoint - vessel_30)
         progress_penalty = max(0.0, current_error - (vessel_30 - state.vessel_temp_c))
-        jacket_below_setpoint_penalty = (
-            max(0.0, setpoint - jacket_60) if current_error > 0.5 else 0.0
-        )
         overshoot_penalty = max(0.0, vessel_15 - setpoint, vessel_30 - setpoint, vessel_60 - setpoint)
-        jacket_penalty = max(0.0, jacket_60 - self.model.limits["jacket_soft_limit_c"])
-        gap_penalty = max(0.0, gap_60 - self.model.limits["max_jacket_vessel_gap_c"])
 
         return (
             future_error * 5.0
             + short_error * 1.5
             + progress_penalty * 0.8
-            + jacket_below_setpoint_penalty * 1.2
             + overshoot_penalty * 30.0
-            + jacket_penalty * 40.0
-            + gap_penalty * 8.0
             + heater_pwm * 0.01
             + fan_state * 1.5
         )

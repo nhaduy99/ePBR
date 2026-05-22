@@ -27,6 +27,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL_DIR = SCRIPT_DIR / "models"
 DEFAULT_HORIZONS_S = (15, 30, 60)
 MODEL_VERSION = 1
+MAX_HEATER_PWM_PERCENT = 80.0
 
 RAW_FEATURE_COLUMNS = [
     "elapsed_s",
@@ -176,14 +177,14 @@ def feature_vector(row: dict[str, str]) -> list[float] | None:
     previous_fan = raw_values["previous_fan_state"]
 
     engineered = [
-        heater / 70.0,
+        heater / MAX_HEATER_PWM_PERCENT,
         fan,
         abs(gap),
-        vessel * heater / 70.0,
-        jacket * heater / 70.0,
-        gap * heater / 70.0,
+        vessel * heater / MAX_HEATER_PWM_PERCENT,
+        jacket * heater / MAX_HEATER_PWM_PERCENT,
+        gap * heater / MAX_HEATER_PWM_PERCENT,
         gap * fan,
-        vessel_rate * heater / 70.0,
+        vessel_rate * heater / MAX_HEATER_PWM_PERCENT,
         jacket_rate * fan,
         1.0 if heater != previous_heater else 0.0,
         1.0 if fan != previous_fan else 0.0,
@@ -316,7 +317,7 @@ def artifact_dict(
         "limits": {
             "min_setpoint_c": 20.0,
             "max_setpoint_c": 36.0,
-            "max_heater_pwm_percent": 70,
+            "max_heater_pwm_percent": int(MAX_HEATER_PWM_PERCENT),
             "vessel_soft_limit_c": 36.5,
             "vessel_emergency_limit_c": 38.0,
             "jacket_soft_limit_c": 45.0,
